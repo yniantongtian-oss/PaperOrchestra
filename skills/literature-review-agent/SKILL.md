@@ -1,6 +1,6 @@
 ---
 name: literature-review-agent
-description: Step 3 of the PaperOrchestra pipeline (arXiv:2604.05018). Execute the literature search strategy from outline.json — discover candidate papers via web search, verify them through Semantic Scholar (Levenshtein > 70 fuzzy title match, temporal cutoff, dedup by paperId), build a BibTeX file, and draft Introduction + Related Work using ≥90% of the verified pool. Runs in parallel with the plotting-agent. TRIGGER when the orchestrator delegates Step 3 or when the user asks to "find citations for my paper", "draft the related work", or "build the bibliography".
+description: Step 3 of the PaperOrchestra pipeline (arXiv:2604.05018). Execute the literature search strategy from outline.json — discover candidate papers via web search, verify them through Semantic Scholar (Levenshtein > 70 fuzzy title match, temporal cutoff, dedup by paperId), cross-corroborate against Crossref + OpenAlex to flag hallucinated citations, build a BibTeX file, and draft Introduction + Related Work using ≥90% of the verified pool. Runs in parallel with the plotting-agent. TRIGGER when the orchestrator delegates Step 3 or when the user asks to "find citations for my paper", "draft the related work", or "build the bibliography".
 ---
 
 # Literature Review Agent (Step 3)
@@ -114,6 +114,27 @@ python skills/literature-review-agent/scripts/exa_search.py \
 Output is a normalized candidate list ready to merge into
 `raw_candidates.json`. Phase 2 verification (Semantic Scholar fuzzy match,
 cutoff, dedup) is unchanged. See `references/exa-search-cookbook.md` for
+the full recipe, query patterns, cost estimates, and security notes.
+
+#### Optional: Tavily as a Phase 1 backend
+
+If your host has no native web search, OR you want an LLM-optimized search
+backend with high relevance scoring, you can use [Tavily](https://tavily.com)
+via the bundled `scripts/tavily_search.py` helper. It is **opt-in** and reads
+`TAVILY_API_KEY` from the environment — the repo never commits a key.
+
+```bash
+export TAVILY_API_KEY="tvly-your-key-here"   # get one at https://app.tavily.com
+python skills/literature-review-agent/scripts/tavily_search.py \
+    --query "Sparse attention long context transformers" \
+    --num-results 15 \
+    --academic \
+    --discovered-for "related_work[2.1]"
+```
+
+Output is a normalized candidate list ready to merge into
+`raw_candidates.json`. Phase 2 verification (Semantic Scholar fuzzy match,
+cutoff, dedup) is unchanged. See `references/tavily-search-cookbook.md` for
 the full recipe, query patterns, cost estimates, and security notes.
 
 Combine all discovered candidates into a single working list. Tag each with
@@ -231,6 +252,44 @@ python skills/literature-review-agent/scripts/validate_pool.py \
 # Must pass before proceeding to Step 4.
 ```
 
+### 3.5. Cross-index verification (Crossref + OpenAlex)
+
+Semantic Scholar is one index and can return a plausible record for a paper
+that does not exist, or attach wrong metadata. Re-check every S2-verified
+paper against two **independent** indices before building the bibliography —
+this is the practical defense against hallucinated citations leaking in.
+
+```bash
+# Optional but recommended: a polite-pool email gives faster, more reliable
+# service. The repo never commits an address.
+export PAPER_ORCHESTRA_MAILTO="you@example.com"
+
+python skills/literature-review-agent/scripts/cross_verify.py \
+    --pool workspace/citation_pool.json --inplace
+# Annotates each paper with a `cross_verification` field and writes
+# workspace/cross_verification_report.json.
+# exit 0 = all corroborated; exit 1 = WARN (something flagged or an index
+# was unreachable); exit 2 = usage error.
+```
+
+This is a **WARN gate, not a hard gate** (like `validate_consistency.py`): it
+flags suspicious citations but does not block the pipeline or delete anything.
+Review the `low` and `conflict` tiers in the report:
+
+- `high` — corroborated by ≥1 external index → keep.
+- `medium` — corroborated but year disagrees → keep, spot-check the year.
+- `low` — not found in Crossref or OpenAlex → **review by hand**. Note that
+  arXiv-only preprints (no DOI) are a common benign cause; `low` means
+  "could not corroborate," not "fabricated." S2 already confirmed it exists.
+- `conflict` — pool DOI disagrees with the external DOI → likely wrong record.
+
+Drop only the entries you genuinely cannot corroborate, then re-run
+`dedupe_by_id.py` onward. If both indices are unreachable (offline), the script
+degrades gracefully and the pipeline continues on S2 verification alone.
+
+See `references/cross-index-verification.md` for the full rationale, confidence
+tiers, and the arXiv false-positive note.
+
 ### 4. Build the BibTeX file
 
 ```bash
@@ -260,7 +319,7 @@ These two steps replace the manual Python snippets that were previously
 required. The pipeline is now:
 
 ```
-dedupe_by_id → validate_pool --fix → bibtex_format → sync_keys
+dedupe_by_id → validate_pool --fix → cross_verify --inplace → bibtex_format → sync_keys
 ```
 
 ### 5. Draft Introduction + Related Work
@@ -283,11 +342,57 @@ Substitute the template placeholders:
 **Also prepend the Anti-Leakage Prompt** from
 `../paper-orchestra/references/anti-leakage-prompt.md`.
 
+**Also append the Introduction and Related Work templates** from
+`skills/shared/section_rhetoric.md`. Two constraints from that file do most
+of the work here:
+
+- The Introduction's Part 2 must state a technical challenge as *limitation
+  plus cause*. "Prior methods are slow" is a symptom; "prior methods
+  re-encode the full context at every step, so latency grows linearly in
+  dialogue length" is a challenge the method can then attack. A Part 2
+  without a cause makes Part 3 unwritable.
+- Each Related Work paragraph runs: scope sentence → representative methods →
+  the limitation of that group *tied to our challenge* → transition. Grouping
+  is by technical theme, never by year. The `min_cite_paper_count` gate
+  measures coverage, not positioning — a draft can pass it and still be a
+  citation dump.
+
 Run your LLM with the combined prompt against `template.tex`. The agent's
 job is to fill in the empty Introduction and Related Work sections of the
 template **and leave everything else untouched**. Output: the full
 `template.tex` with those two sections filled. Save to
 `workspace/drafts/intro_relwork.tex`.
+
+### 5b. Append §2 to research_brief.md
+
+After `intro_relwork.tex` is drafted and before the citation coverage check,
+append §2 to `workspace/research_brief.md` (see `skills/shared/research_brief_template.md`).
+
+Template:
+
+```markdown
+## §2 · Literature Landscape
+_Written by: literature-review-agent, Step 3_
+
+**What the literature says about the core claim:** <2-3 sentence synthesis>
+
+**Strongest prior work (must address in the paper):**
+- <bibtex_key>: <why this is the strongest comparator or predecessor>
+
+**Gaps confirmed by the literature:** <list>
+
+**Baseline comparisons — verification status:**
+| Baseline | In citation_pool? | Confidence tier |
+|---|---|---|
+
+**Related Work cluster coverage:**
+| Cluster | Papers found | Notes |
+|---|---|---|
+
+**Anything the section-writing agent should know:** <important context>
+```
+
+This synthesises what was actually found — not what the outline assumed.
 
 ### 6. Verify ≥90% citation coverage
 
@@ -342,7 +447,9 @@ If your host has no web search tool, switch to degraded mode:
 - `references/verification-rules.md` — Levenshtein cutoff, year alignment, dedup
 - `references/citation-density-rule.md` — the ≥90% integration rule
 - `references/s2-api-cookbook.md` — Semantic Scholar URLs, fields, rate limits
+- `references/cross-index-verification.md` — Crossref + OpenAlex corroboration, confidence tiers, arXiv false-positive note
 - `references/exa-search-cookbook.md` — optional Exa backend for Phase 1 (research-paper-focused web search)
+- `references/tavily-search-cookbook.md` — optional Tavily backend for Phase 1 (LLM-optimized web search)
 - `scripts/pre_dedup_candidates.py` — **NEW** dedup Phase 1 candidates before Phase 2 (saves 30-40% S2 quota)
 - `scripts/s2_cache.py` — **NEW** persistent S2 response cache (eliminates re-verification on re-runs)
 - `scripts/validate_pool.py` — **NEW** validate & auto-fix citation_pool.json schema (authors format)
@@ -354,3 +461,9 @@ If your host has no web search tool, switch to degraded mode:
 - `scripts/citation_coverage.py` — ≥90% citation coverage gate
 - `scripts/s2_search.py` — **NEW** Semantic Scholar title-search helper; reads `SEMANTIC_SCHOLAR_API_KEY` from env (optional — falls back to unauthenticated)
 - `scripts/exa_search.py` — optional Exa Phase 1 backend (reads `EXA_API_KEY` from env)
+- `scripts/tavily_search.py` — optional Tavily Phase 1 backend (reads `TAVILY_API_KEY` from env)
+- `scripts/crossref_client.py` — **NEW** Crossref title/DOI lookup for cross-index corroboration (no key; reads `CROSSREF_MAILTO` / `PAPER_ORCHESTRA_MAILTO`)
+- `scripts/openalex_client.py` — **NEW** OpenAlex title/DOI lookup for cross-index corroboration (no key; reads `OPENALEX_MAILTO` / `PAPER_ORCHESTRA_MAILTO`)
+- `scripts/cross_verify.py` — **NEW** cross-corroborate the S2-verified pool against Crossref + OpenAlex; flags hallucinated citations (WARN gate)
+- `skills/shared/research_brief_template.md` — **NEW** §2 schema; append after intro_relwork.tex is drafted
+- `skills/shared/section_rhetoric.md` — **NEW** Introduction logic chain + Related Work paragraph template
