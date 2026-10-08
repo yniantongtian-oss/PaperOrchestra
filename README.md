@@ -26,9 +26,9 @@ The paper defines a five-agent pipeline
 - Section Writing
 - Content Refinement
   
-that substantially outperforms single-agent and tree-search baselines on the `PaperWritingBench` benchmark (50–68% absolute win margin on literature review quality; 14–38% on overall quality). The paper ships the exact prompts for every agent in Appendix F.
+that substantially outperforms single-agent and tree-search baselines on the `PaperWritingBench` benchmark (50–68% absolute win margin on literature review quality; 14–38% on overall quality). The paper documents the source agent instructions in Appendix F.
 
-This repo turns those prompts, schemas, halt rules, and verification pipelines into a set of **host-agent-executable skills**. There are **no API keys**, no SDK dependencies, no embedded LLM calls. The skills are instruction documents plus deterministic helpers; your coding agent does all LLM reasoning and web search using its own tools.
+This repository packages those instructions, schemas, halt rules, and verification pipelines into a set of **host-agent-executable skills**. There are **no API keys**, no SDK dependencies, no embedded LLM calls. The skills are instruction documents plus deterministic helpers; your coding agent does all LLM reasoning and web search using its own tools.
 
 <p align="center">
 <img width="640" height="413" alt="image" src="https://github.com/user-attachments/assets/073630c8-9790-4b38-b8c4-184cec6eee06" />
@@ -39,7 +39,7 @@ This repo turns those prompts, schemas, halt rules, and verification pipelines i
 Each skill is:
 
 - `SKILL.md` — a dense instruction document the host agent reads and follows.
-- `references/` — reference material: verbatim paper prompts (Appendix F), JSON
+- `references/` — reference material: source paper instructions (Appendix F), JSON
   schemas, rubrics, halt rules, example outputs.
 - `scripts/` — **purely deterministic** local helpers: JSON schema validation,
   Levenshtein fuzzy matching, BibTeX formatting, dedup, LaTeX sanity checks,
@@ -114,7 +114,7 @@ The four phases are:
 | Phase | Tool | What happens |
 |---|---|---|
 | 1 Discovery | `discover_logs.py` | Walks `--search-roots` to catalog every relevant log file across all agent caches. Prints a summary for user review before anything is read. |
-| 2 Extraction | LLM (per ~50 KB batch) | Applies `references/extraction-prompt.md` to each batch; produces `raw_experiments.json`. PII is stripped; unverified numbers are flagged `[UNVERIFIED]`. |
+| 2 Extraction | LLM (per ~50 KB batch) | Applies the skill's extraction reference to each batch; produces `raw_experiments.json`. PII is stripped; unverified numbers are flagged `[UNVERIFIED]`. |
 | 3 Synthesis | LLM (one call) | Merges possibly-redundant experiment records into a single research narrative (`synthesis.json`). Detects multiple disconnected projects and pauses to ask the user. |
 | 4 Formatting | `format_po_inputs.py` | Converts `synthesis.json` into `idea.md` (Sparse Idea format, §3.1) and `experimental_log.md` (App. D.3), ready for `paper-orchestra`. |
 
@@ -224,8 +224,8 @@ rules).
 
 - [`skills/agent-research-aggregator/SKILL.md`](skills/agent-research-aggregator/SKILL.md) — full phase-by-phase protocol
 - [`skills/agent-research-aggregator/references/log-formats.md`](skills/agent-research-aggregator/references/log-formats.md) — per-agent cache layouts and file priorities
-- [`skills/agent-research-aggregator/references/extraction-prompt.md`](skills/agent-research-aggregator/references/extraction-prompt.md) — verbatim LLM extraction prompt
-- [`skills/agent-research-aggregator/references/synthesis-prompt.md`](skills/agent-research-aggregator/references/synthesis-prompt.md) — verbatim LLM synthesis prompt
+- [Research aggregation reference material](skills/agent-research-aggregator/references/) — extraction guidance and schemas
+- [Research aggregation resource directory](skills/agent-research-aggregator/references/) — synthesis guidance
 
 ## Install
 
@@ -387,7 +387,7 @@ paper-orchestra/
 
 ## Fidelity to the paper
 
-Every agent prompt in `skills/*/references/prompt.md` is reproduced **verbatim** from Appendix F of arXiv:2604.05018, with a header pointing to the page number. See `docs/paper-fidelity.md` for a design-decision → paper-page map.
+Source agent instructions under `skills/*/references/` are preserved from Appendix F of arXiv:2604.05018, with a header pointing to the page number. See `docs/paper-fidelity.md` for a design-decision → paper-page map.
 
 On top of the paper, this repo adds a few deterministic hardening scripts (orphan-citation gate, anti-leakage grep, worklog-based rollback, provenance snapshots). These are clearly marked as out-of-paper improvements in `docs/paper-fidelity.md`.
 
